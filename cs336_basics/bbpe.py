@@ -1,9 +1,9 @@
 import logging
 import sys
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from contextlib import contextmanager
-from typing import Dict, List, Tuple
+from typing import List, Tuple
 
 import regex as re
 from tqdm.auto import tqdm
@@ -29,8 +29,10 @@ def timer(name):
 class Node:
     """Node class for doubly linked list"""
 
-    def __init__(self, value: int, prev: "Node" = None, next: "Node" = None):
+    def __init__(self, value: int, freq: int, prev: "Node" = None, next: "Node" = None):
         self.value = value
+        self.freq = freq
+
         self.prev = prev
         self.next = next
 
@@ -74,33 +76,33 @@ class BBPE:
         with timer("Reading corpus"):
             with open(input_path) as f:
                 corpus = f.read()
+            for special_token in special_tokens:
+                corpus.replace(special_token, "")
 
-        with timer("Pre-tokenizing"):
-            chunks = self.pre_tokenize(corpus)
-
-        with timer("Training BPE"):
-            vocab = dict()
-            for i in range(256):
-                vocab[i] = bytes([i])
-            merges = []
-            num_merges = vocab_size - len(vocab) - len(special_tokens)
-
+        vocab = dict()
+        for i in range(256):
+            vocab[i] = bytes([i])
+        merges = []
+        num_merges = vocab_size - len(vocab) - len(special_tokens)
+        with timer("Contructing Data Structures"):
             # construct initial index and occurences from chunks
             # index key is pair, value is first node of pair
             # NOTE: invalid node will be NOT deleted for simplicity, this logic will be updated if memory is a concern
             occurences = defaultdict(int)
             index = defaultdict(list)
 
-            for chunk in chunks:
-                prev_node = Node(chunk[0])
+            chunk_freq = self.pre_tokenize(corpus)
+            for chunk, freq in chunk_freq.items():
+                prev_node = Node(chunk[0], freq)
                 for value in chunk[1:]:
-                    cur_node = Node(value, prev=prev_node)
+                    cur_node = Node(value, freq, prev=prev_node)
                     prev_node.next = cur_node
                     pair = (prev_node.value, cur_node.value)
-                    occurences[pair] += 1
+                    occurences[pair] += freq
                     index[pair].append(prev_node)
                     prev_node = cur_node
 
+        with timer("Merging"):
             iterator = tqdm(range(num_merges)) if progress else range(num_merges)
             for _ in iterator:
                 # choose most frequence pair, tie breaking rule is lexicographical order
@@ -120,14 +122,15 @@ class BBPE:
                         # invalid node, skip
                         continue
                     # update occurences
-                    occurences[(p1, p2)] -= 1
+                    freq = node.freq
+                    occurences[(p1, p2)] -= freq
                     if node.prev:
-                        occurences[(node.prev.value, node.value)] -= 1
-                        occurences[(node.prev.value, new_idx)] += 1
+                        occurences[(node.prev.value, node.value)] -= freq
+                        occurences[(node.prev.value, new_idx)] += freq
 
                     if node.next.next:
-                        occurences[(node.next.value, node.next.next.value)] -= 1
-                        occurences[(new_idx, node.next.next.value)] += 1
+                        occurences[(node.next.value, node.next.next.value)] -= freq
+                        occurences[(new_idx, node.next.next.value)] += freq
 
                     node.next.delete()
                     node.value = new_idx
@@ -151,8 +154,11 @@ class BBPE:
 
     def pre_tokenize(self, corpus: str) -> List[List[int]]:
         # is corpus a string? or list of strings?
-        chunks = (match.group() for match in re.finditer(self.pattern, corpus))
-        chunks = [chunk.encode("utf-8") for chunk in chunks]
+        counter = Counter(re.findall(self.pattern, corpus))
+        chunks = {}
+        to_tuple = lambda seq: tuple(c for c in seq.encode("utf-8"))
+        for token, freq in counter.items():
+            chunks[to_tuple(token)] = freq
         return chunks
 
 
