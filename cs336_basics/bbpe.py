@@ -51,17 +51,18 @@ class BBPE:
             vocab = dict()
             for i in range(256):
                 vocab[i] = bytes([i])
-
             merges = []
             num_merges = vocab_size - len(vocab) - len(special_tokens)
 
             iterator = tqdm(range(num_merges)) if progress else range(num_merges)
+
+            # compute all pair occurences
+            occurences = defaultdict(int)
+            for chunk in chunks:
+                for p1, p2 in zip(chunk, chunk[1:]):
+                    occurences[(p1, p2)] += 1
+
             for merge_idx in iterator:
-                occurences = defaultdict(int)
-                # count all pair occurences
-                for chunk in chunks:
-                    for p1, p2 in zip(chunk, chunk[1:]):
-                        occurences[(p1, p2)] += 1
                 # choose most frequence pair, tie breaking rule is lexicographical order
                 max_pair = max(occurences, key=lambda x: (occurences[x], vocab[x[0]], vocab[x[1]]))
 
@@ -70,18 +71,32 @@ class BBPE:
                 merges.append((vocab[max_pair[0]], vocab[max_pair[1]]))
                 vocab[idx] = vocab[max_pair[0]] + vocab[max_pair[1]]
 
-                # replace all occurences of max_pair with idx
                 new_chunks = []
                 for chunk in chunks:
-                    i = 0
                     new_chunk = []
+                    dec = []
+                    inc = []
+                    i = 0
                     while i < len(chunk):
                         if i < len(chunk) - 1 and chunk[i] == max_pair[0] and chunk[i + 1] == max_pair[1]:
                             new_chunk.append(idx)
+                            # update occurences
+                            dec.append(max_pair)
+                            if i > 0:
+                                inc.append((chunk[i - 1], idx))
+                                dec.append((chunk[i - 1], chunk[i]))
+                            if i < len(chunk) - 2:
+                                inc.append((idx, chunk[i + 2]))
+                                dec.append((chunk[i + 1], chunk[i + 2]))
                             i += 2
                         else:
                             new_chunk.append(chunk[i])
                             i += 1
+
+                    for pair in inc:
+                        occurences[pair] += 1
+                    for pair in dec:
+                        occurences[pair] -= 1
                     new_chunks.append(new_chunk)
                 chunks = new_chunks
         # add special tokens, starting from 0
