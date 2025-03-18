@@ -27,7 +27,7 @@ def timer(name):
     start = time.perf_counter()
     yield
     end = time.perf_counter()
-    logger.info(f"{name} took {end - start:.2f}s")
+    logger.info(f"{name} took {end - start:.4f}s")
 
 
 class Node:
@@ -62,6 +62,100 @@ class Node:
         self.next = None
 
 
+class PriorityQueue:
+    def __init__(self):
+        self.heap: List[Tuple[Tuple[int, int], int]] = [((0, 0), 0)]  # 1-indexed heap
+        self.index = dict()
+
+    def swap(self, i: int, j: int):
+        self.heap[i], self.heap[j] = self.heap[j], self.heap[i]
+        self.index[self.heap[i][0]] = i
+        self.index[self.heap[j][0]] = j
+
+    def upward(self, idx: int):
+        while idx > 1:
+            parent = idx // 2
+            if self.heap[parent][1] < self.heap[idx][1]:
+                self.swap(parent, idx)
+                idx = parent
+            else:
+                break
+
+    def downward(self, idx: int):
+        while 2 * idx < len(self.heap):
+            left = 2 * idx
+            right = 2 * idx + 1
+            if right < len(self.heap) and self.heap[right][1] > self.heap[left][1]:
+                child = right
+            else:
+                child = left
+            if self.heap[child][1] > self.heap[idx][1]:
+                self.swap(child, idx)
+                idx = child
+            else:
+                break
+
+    def get_max(self, vocab):
+        max_freq = self.top()[1]
+        candidates = []
+
+        while self.top()[1] == max_freq:
+            candidates.append(self.heap[1])
+            self.pop()
+
+        max_pair = max(candidates, key=lambda x: (vocab[x[0][0]], vocab[x[0][1]]))[0]
+
+        # repush
+        for pair, freq in candidates:
+            if pair != max_pair:
+                self.push(pair, freq)
+        return max_pair
+
+    def pop(self):
+        pair = self.heap[1][0]
+        self.delete(pair)
+
+    def top(self):
+        assert len(self.heap) > 1
+        return self.heap[1]
+
+    def push(self, pair: Tuple[int, int], freq: int):
+        self.heap.append((pair, freq))
+        self.index[pair] = len(self.heap) - 1
+        self.upward(len(self.heap) - 1)
+
+    def delete(self, pair: Tuple[int, int]):
+        assert pair in self.index
+        idx = self.index[pair]
+
+        self.swap(idx, len(self.heap) - 1)
+        self.heap.pop()
+        del self.index[pair]
+
+        if idx < len(self.heap):
+            self.upward(idx)
+            self.downward(idx)
+
+    def update(self, pair: Tuple[int, int], diff: int):
+        if pair in self.index:
+            idx = self.index[pair]
+            new_freq = self.heap[idx][1] + diff
+            assert new_freq >= 0, f"new_freq: {new_freq}, diff: {diff}, pair: {pair}, idx: {idx}"
+            if new_freq == 0:
+                self.delete(pair)
+            else:
+                self.heap[idx] = (pair, new_freq)
+                self.upward(idx)
+                self.downward(idx)
+        else:
+            if diff:
+                self.push(pair, diff)
+
+    def print(self, vocab):
+        for pair, freq in self.heap[1:]:
+            print(f"{vocab[pair[0]]} + {vocab[pair[1]]}: {freq}")
+
+
 class BBPE:
     def __init__(self, special_tokens: List[str] = []):
         self.pattern = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
@@ -77,7 +171,7 @@ class BBPE:
         self.special_tokens = special_tokens
 
     def train(
-        self, input_path: str, vocab_size: int, special_tokens: List[str], progress: bool = False, num_workers: int = 4
+        self, input_path: str, vocab_size: int, special_tokens: List[str], progress: bool = False, num_proc: int = 4
     ):
         # NOTE: UTF-8 decoding consumes huge memory, so process in streaming manner. Here, |endoftext| is specific delimiter for this case.
         READ_CHUNK_SIZE = 1024 * 1024
@@ -87,7 +181,7 @@ class BBPE:
         buf = ""
         file_size = os.path.getsize(input_path)
         with timer("Reading corpus and counting frequencies"):
-            with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
+            with concurrent.futures.ProcessPoolExecutor(max_workers=num_proc) as executor:
                 futures = []
                 pbar = (
                     tqdm(total=file_size, unit="B", unit_scale=True, desc="Reading file", leave=False)
@@ -137,12 +231,17 @@ class BBPE:
                     occurences[pair] += freq
                     index[pair].append(prev_node)
                     prev_node = cur_node
+            pq = PriorityQueue()
+            for pair, freq in occurences.items():
+                pq.push(pair, freq)
+
+            del occurences
+        __import__("gc").collect()
 
         with timer("Merging"):
             iterator = tqdm(range(num_merges), leave=False) if progress else range(num_merges)
             for _ in iterator:
-                # choose most frequence pair, tie breaking rule is lexicographical order
-                p1, p2 = max(occurences, key=lambda x: (occurences[x], vocab[x[0]], vocab[x[1]]))
+                p1, p2 = pq.get_max(vocab)
                 c1 = vocab[p1]
                 c2 = vocab[p2]
 
@@ -152,22 +251,23 @@ class BBPE:
                 vocab[new_idx] = c1 + c2
 
                 # update index and occurences
-                # NOTE: I can not find way to dealing with deletion while parallelizing, so skip here.
+                # NOTE: I can not find way to safely delete node while parallelizing, so skip here. -> It can be safely parallelized if we split nodes per chunk
+                changes = defaultdict(int)
                 for node in index[(p1, p2)]:
                     node: Node
                     if node.value != p1 or node.next is None or node.next.value != p2:
                         # invalid node, skip
                         continue
-                    # update occurences
+
                     freq = node.freq
-                    occurences[(p1, p2)] -= freq
+                    changes[(p1, p2)] -= freq
                     if node.prev:
-                        occurences[(node.prev.value, node.value)] -= freq
-                        occurences[(node.prev.value, new_idx)] += freq
+                        changes[(node.prev.value, p1)] -= freq
+                        changes[(node.prev.value, new_idx)] += freq
 
                     if node.next.next:
-                        occurences[(node.next.value, node.next.next.value)] -= freq
-                        occurences[(new_idx, node.next.next.value)] += freq
+                        changes[(p2, node.next.next.value)] -= freq
+                        changes[(new_idx, node.next.next.value)] += freq
 
                     node.next.delete()
                     node.value = new_idx
@@ -177,6 +277,10 @@ class BBPE:
                         index[(node.prev.value, new_idx)].append(node.prev)
                     if node.next:
                         index[(new_idx, node.next.value)].append(node)
+
+                for pair, diff in changes.items():
+                    pq.update(pair, diff)
+
         # add special tokens, starting from 0
         new_vocab = dict()
         for i, token in enumerate(special_tokens):
