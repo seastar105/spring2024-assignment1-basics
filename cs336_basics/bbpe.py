@@ -175,6 +175,12 @@ class Tokenizer:
 
         self.special_tokens = special_tokens or []
         self.special_tokens_map = {token: rev_vocab[token.encode("utf-8")] for token in special_tokens}
+        if self.special_tokens:
+            sorted_tokens = sorted(self.special_tokens, key=len, reverse=True)
+            pattern = "(" + "|".join(re.escape(token) for token in sorted_tokens) + ")"
+            self.special_regex = re.compile(pattern)
+        else:
+            self.special_regex = None
 
     @classmethod
     def from_files(cls, vocab_filepath: str, merges_filepath: str, special_tokens: List[str] | None = None):
@@ -206,15 +212,18 @@ class Tokenizer:
                 break
         return chunk
 
-    def encode(self, text: str) -> List[int]:
-        if self.special_tokens:
-            special_pattern = "(" + "|".join(re.escape(k) for k in self.special_tokens) + ")"
-            special_chunks = re.split(special_pattern, text)
+    def encode(self, text: str, num_proc: int = 4) -> List[int]:
+        if len(text) > 10 * 1024 * 1024:
+            return list(self.encode_iterable([text], num_proc))
+        if self.special_regex:
+            special_chunks = re.split(self.special_regex, text)
         else:
             special_chunks = [text]
 
         tokens = []
         for text in special_chunks:
+            if len(text) == 0:
+                continue
             if text in self.special_tokens_map:
                 tokens.extend([self.special_tokens_map[text]])
             else:
@@ -223,9 +232,51 @@ class Tokenizer:
                     tokens.extend(self.encode_chunk(chunk))
         return tokens
 
-    def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
-        for text in iterable:
-            yield from self.encode(text)
+    def encode_iterable(self, iterable: Iterable[str], num_proc: int = 4) -> Iterator[int]:
+        # NOTE: Throughput is about 10MB/s with num_proc=16, need to improve
+        CLEAR_CHUNK_NUM = num_proc * num_proc
+        CHUNK_SIZE = 1024 * 1024
+        ADJUST_SIZE = 1024
+        with concurrent.futures.ProcessPoolExecutor(max_workers=num_proc) as executor:
+            futures = []
+            buf = ""
+            for text in iterable:
+                buf += text
+                if len(buf) >= CHUNK_SIZE:
+                    pos = CHUNK_SIZE
+                    found = False
+                    while not found:
+                        # adjust boundary
+                        if self.special_regex:
+                            m = self.special_regex.search(buf, pos)
+                            if m:
+                                pos = m.end()
+                                found = True
+                            else:
+                                ws = re.search(r"\s", buf[pos:])
+                                if ws:
+                                    pos = pos + ws.start()
+                                found = True
+                        else:
+                            ws = re.search(r"\s", buf[pos:])
+                            if ws:
+                                pos = pos + ws.start()
+                                found = True
+                        if not found:
+                            pos -= ADJUST_SIZE
+                    chunk = buf[:pos]
+                    buf = buf[pos:]
+                    futures.append(executor.submit(self.encode, chunk))
+                    if len(futures) >= CLEAR_CHUNK_NUM:
+                        for future in concurrent.futures.as_completed(futures):
+                            tokens = future.result()
+                            yield from tokens
+                        futures.clear()
+            if buf:
+                futures.append(executor.submit(self.encode, buf))
+        for future in concurrent.futures.as_completed(futures):
+            tokens = future.result()
+            yield from tokens
 
     def decode(self, tokens: List[int]) -> str:
         cat_bytes = b"".join(self.vocab[token] for token in tokens)
@@ -234,15 +285,15 @@ class Tokenizer:
     @staticmethod
     def from_pretrained(name: str):
         PRETRAINED = {
-            "owt": {
-                "vocab_filepath": str(Path(__file__).parent / "tokenizers" / "open_webtext_vocab.json"),
-                "merges_filepath": str(Path(__file__).parent / "tokenizers" / "open_webtext_merges.txt"),
-                "special_tokens": ["|endoftext|"],
+            "open_webtext": {
+                "vocab_filepath": str(Path(__file__).parent.parent / "tokenizers" / "open_webtext_vocab.json"),
+                "merges_filepath": str(Path(__file__).parent.parent / "tokenizers" / "open_webtext_merges.txt"),
+                "special_tokens": ["<|endoftext|>"],
             },
             "tiny_stories": {
-                "vocab_filepath": str(Path(__file__).parent / "tokenizers" / "tiny_stories_vocab.json"),
-                "merges_filepath": str(Path(__file__).parent / "tokenizers" / "tiny_stories_merges.txt"),
-                "special_tokens": ["|endoftext|"],
+                "vocab_filepath": str(Path(__file__).parent.parent / "tokenizers" / "tiny_stories_vocab.json"),
+                "merges_filepath": str(Path(__file__).parent.parent / "tokenizers" / "tiny_stories_merges.txt"),
+                "special_tokens": ["<|endoftext|>"],
             },
         }
         if name not in PRETRAINED:
@@ -254,11 +305,11 @@ class Tokenizer:
     def train(
         cls, input_path: str, vocab_size: int, special_tokens: List[str], progress: bool = False, num_proc: int = 4
     ):
-        # NOTE: UTF-8 decoding consumes huge memory, so process in streaming manner. Here, |endoftext| is specific delimiter for this case.
+        # NOTE: UTF-8 decoding consumes huge memory, so process in streaming manner. Here, <|endoftext|> is specific delimiter for this case.
         READ_CHUNK_SIZE = 1024 * 1024
         DOC_PROCESS_SIZE = 1024 * 1024 * 10
         chunk_freq = dict()
-        doc_delimiter = "|endoftext|"
+        doc_delimiter = "<|endoftext|>"
         buf = ""
         file_size = os.path.getsize(input_path)
         with timer("Reading corpus and counting frequencies"):
@@ -334,7 +385,6 @@ class Tokenizer:
                 vocab[new_idx] = c1 + c2
 
                 # update index and occurences
-                # NOTE: I can not find way to safely delete node while parallelizing, so skip here. -> It can be safely parallelized if we split nodes per chunk
                 changes = defaultdict(int)
                 for node in index[(p1, p2)]:
                     node: Node

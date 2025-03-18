@@ -114,7 +114,6 @@ he r
 Ġo f
 a d
 it t
-< >
 s e
 Ġ B
 Ġd o
@@ -246,6 +245,7 @@ ot her
 Ġc l
 Ġlo ved
 Ġloo ked
+Ċ Ċ
 ou g
 Ġf ound
 Ġs p
@@ -616,7 +616,7 @@ b er
 ĠThe n
 op le
 Ġe ven
-Ċ Ċ
+ĊĊ Ċ
 Ġm ag
 Ġh ard
 Ġsh iny
@@ -1774,7 +1774,6 @@ ll a
 Ġin c
 um b
 b r
-Ċ Ġ
 Ġbug s
 il k
 Ġwonder ful
@@ -1929,6 +1928,7 @@ a ur
 ĠFin ally
 Ġcan not
 Ġwhist le
+ĊĊ Ġ
 Ġc ard
 Ġs ick
 Ġp ath
@@ -4636,6 +4636,7 @@ m ble
 ap a
 Ġse w
 Ġt ug
+Ġ Ċ
 is ty
 xy gen
 Ġhear ts
@@ -5171,6 +5172,7 @@ ic ing
 Ġsp it
 Ġremain ed
 t her
+Ċ Ġ
 ĠIt s
 w alk
 Bob by
@@ -6026,7 +6028,6 @@ es ome
 d ies
 Ġcomplain ing
 ĠSqu irrel
-Ġ Ġ
 L ola
 R un
 Ġpupp et
@@ -6048,6 +6049,7 @@ ang led
 .. .
 Ġse ven
 Ġbalan ced
+Ġ Ġ
 Ġresc ued
 n eath
 b l
@@ -6509,7 +6511,6 @@ o ke
 Ġg ri
 ver s
 Ġgrow s
-Ġ ĊĠ
 Ġsweet s
 ĠGood bye
 Ġown ers
@@ -6539,6 +6540,7 @@ it ches
 F or
 Ġsw ept
 Ġcon n
+ĠĊ Ġ
 ? '
 Ġthu d
 Ġexha usted
@@ -7017,6 +7019,7 @@ Cl ara
 E llie
 Ġy um
 Ġblin king
+Ġ ĊĊ
 ĠJ une
 Ġtw eet
 Ġsymbol s
@@ -7477,7 +7480,6 @@ B inky
 Ġbeep ed
 ĠF airy
 Ġquarrel ed
-Ġ Ċ
 f orm
 el ie
 Ġr amp
@@ -8753,6 +8755,7 @@ Blue y
 ĠSt ep
 ĠP inch
 ĠH i
+Ġ ĊĊĊ
 rac adabra
 F reeze
 B ounce
@@ -9738,6 +9741,3 @@ Fr oggy
 Ġbo oth
 ĠL and
 S urrender
-Rock y
-Ġmeadow s
-Ġimag inary

@@ -12,7 +12,7 @@ if __name__ == "__main__":
     start = time.perf_counter()
     input_path = "data/TinyStoriesV2-GPT4-train.txt"
     vocab_size = 10000
-    special_tokens = ["|endoftext|"]
+    special_tokens = ["<|endoftext|>"]
     num_proc = 16
     vocab, merges = Tokenizer.train(input_path, vocab_size, special_tokens, progress=True, num_proc=num_proc)
     end = time.perf_counter()
