@@ -1,4 +1,6 @@
+import concurrent.futures
 import logging
+import os
 import sys
 import time
 from collections import Counter, defaultdict
@@ -7,6 +9,8 @@ from typing import List, Tuple
 
 import regex as re
 from tqdm.auto import tqdm
+
+from cs336_basics.utils import gpt2_bytes_to_unicode
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -72,13 +76,46 @@ class BBPE:
         self.merges: List[Tuple[bytes, bytes]] = []
         self.special_tokens = special_tokens
 
-    def train(self, input_path: str, vocab_size: int, special_tokens: List[str], progress: bool = False):
-        with timer("Reading corpus"):
-            with open(input_path) as f:
-                corpus = f.read()
-            for special_token in special_tokens:
-                corpus.replace(special_token, "")
+    def train(
+        self, input_path: str, vocab_size: int, special_tokens: List[str], progress: bool = False, num_workers: int = 4
+    ):
+        # NOTE: UTF-8 decoding consumes huge memory, so process in streaming manner. Here, |endoftext| is specific delimiter for this case.
+        READ_CHUNK_SIZE = 1024 * 1024
+        DOC_PROCESS_SIZE = 1024 * 1024 * 10
+        chunk_freq = dict()
+        doc_delimiter = "|endoftext|"
+        buf = ""
+        file_size = os.path.getsize(input_path)
+        with timer("Reading corpus and counting frequencies"):
+            with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
+                futures = []
+                pbar = (
+                    tqdm(total=file_size, unit="B", unit_scale=True, desc="Reading file", leave=False)
+                    if progress
+                    else None
+                )
+                with open(input_path) as f:
+                    while True:
+                        chunk = f.read(READ_CHUNK_SIZE)
+                        if not chunk:
+                            break
+                        buf += chunk
+                        if pbar:
+                            pbar.update(len(chunk.encode("utf-8")))
+                        if len(buf) >= DOC_PROCESS_SIZE:
+                            rem_idx = buf.rfind(doc_delimiter) + len(doc_delimiter)
+                            corpus = buf[:rem_idx].replace(doc_delimiter, "")
+                            futures.append(executor.submit(self.pre_tokenize, corpus))
+                            buf = buf[rem_idx:]
+                if buf:
+                    futures.append(executor.submit(self.pre_tokenize, buf.replace(doc_delimiter, "")))
+                for future in tqdm(
+                    concurrent.futures.as_completed(futures), total=len(futures), desc="Processing chunks", leave=False
+                ):
+                    chunk_freq.update(future.result())
 
+        __import__("gc").collect()
+        logger.info(f"Number of chunks: {len(chunk_freq)}")
         vocab = dict()
         for i in range(256):
             vocab[i] = bytes([i])
@@ -91,7 +128,6 @@ class BBPE:
             occurences = defaultdict(int)
             index = defaultdict(list)
 
-            chunk_freq = self.pre_tokenize(corpus)
             for chunk, freq in chunk_freq.items():
                 prev_node = Node(chunk[0], freq)
                 for value in chunk[1:]:
@@ -103,7 +139,7 @@ class BBPE:
                     prev_node = cur_node
 
         with timer("Merging"):
-            iterator = tqdm(range(num_merges)) if progress else range(num_merges)
+            iterator = tqdm(range(num_merges), leave=False) if progress else range(num_merges)
             for _ in iterator:
                 # choose most frequence pair, tie breaking rule is lexicographical order
                 p1, p2 = max(occurences, key=lambda x: (occurences[x], vocab[x[0]], vocab[x[1]]))
@@ -116,6 +152,7 @@ class BBPE:
                 vocab[new_idx] = c1 + c2
 
                 # update index and occurences
+                # NOTE: I can not find way to dealing with deletion while parallelizing, so skip here.
                 for node in index[(p1, p2)]:
                     node: Node
                     if node.value != p1 or node.next is None or node.next.value != p2:
@@ -152,9 +189,8 @@ class BBPE:
         self.merges = merges
         self.special_tokens = special_tokens
 
-    def pre_tokenize(self, corpus: str) -> List[List[int]]:
-        # is corpus a string? or list of strings?
-        counter = Counter(re.findall(self.pattern, corpus))
+    def pre_tokenize(self, text: str) -> List[List[int]]:
+        counter = Counter(re.findall(self.compiled_pattern, text))
         chunks = {}
         to_tuple = lambda seq: tuple(c for c in seq.encode("utf-8"))
         for token, freq in counter.items():
@@ -166,3 +202,4 @@ if __name__ == "__main__":
     # Train tokenizer on tiny stories
     tokenizer = BBPE()
     tokenizer.train("./data/TinyStoriesV2-GPT4-train.txt", 10000, ["|endoftext|"], progress=True)
+    # tokenizer.train("./data/owt_train.txt", 32000, ["|endoftext|"], progress=True)
