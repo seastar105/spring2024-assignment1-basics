@@ -5,7 +5,7 @@ import sys
 import time
 from collections import Counter, defaultdict
 from contextlib import contextmanager
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 import regex as re
 from tqdm.auto import tqdm
@@ -157,21 +157,11 @@ class PriorityQueue:
 
 
 class BBPE:
-    def __init__(self, special_tokens: List[str] = []):
-        self.pattern = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
-        self.compiled_pattern = re.compile(self.pattern)
+    compiled_pattern = re.compile(r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""")
 
-        self.special_tokens = special_tokens
-        self.vocab = dict()
-        for i, token in enumerate(self.special_tokens):
-            self.vocab[i] = token.encode("utf-8")
-        for i in range(256):
-            self.vocab[256 + i] = bytes([i])
-        self.merges: List[Tuple[bytes, bytes]] = []
-        self.special_tokens = special_tokens
-
+    @classmethod
     def train(
-        self, input_path: str, vocab_size: int, special_tokens: List[str], progress: bool = False, num_proc: int = 4
+        cls, input_path: str, vocab_size: int, special_tokens: List[str], progress: bool = False, num_proc: int = 4
     ):
         # NOTE: UTF-8 decoding consumes huge memory, so process in streaming manner. Here, |endoftext| is specific delimiter for this case.
         READ_CHUNK_SIZE = 1024 * 1024
@@ -199,14 +189,16 @@ class BBPE:
                         if len(buf) >= DOC_PROCESS_SIZE:
                             rem_idx = buf.rfind(doc_delimiter) + len(doc_delimiter)
                             corpus = buf[:rem_idx].replace(doc_delimiter, "")
-                            futures.append(executor.submit(self.pre_tokenize, corpus))
+                            futures.append(executor.submit(cls.pre_tokenize, corpus))
                             buf = buf[rem_idx:]
                 if buf:
-                    futures.append(executor.submit(self.pre_tokenize, buf.replace(doc_delimiter, "")))
+                    futures.append(executor.submit(cls.pre_tokenize, buf.replace(doc_delimiter, "")))
                 for future in tqdm(
                     concurrent.futures.as_completed(futures), total=len(futures), desc="Processing chunks", leave=False
                 ):
-                    chunk_freq.update(future.result())
+                    result = future.result()
+                    for token, freq in result.items():
+                        chunk_freq[token] = chunk_freq.get(token, 0) + freq
 
         __import__("gc").collect()
         logger.info(f"Number of chunks: {len(chunk_freq)}")
@@ -279,27 +271,42 @@ class BBPE:
                         index[(new_idx, node.next.value)].append(node)
 
                 for pair, diff in changes.items():
-                    pq.update(pair, diff)
+                    if diff:
+                        pq.update(pair, diff)
 
-        # add special tokens, starting from 0
-        new_vocab = dict()
+        # add special tokens
         for i, token in enumerate(special_tokens):
-            new_vocab[i] = token.encode("utf-8")
+            new_idx = len(vocab)
+            vocab[new_idx] = token.encode("utf-8")
 
-        for i, token in vocab.items():
-            new_vocab[i + len(special_tokens)] = token
+        return vocab, merges
 
-        self.vocab = new_vocab
-        self.merges = merges
-        self.special_tokens = special_tokens
-
-    def pre_tokenize(self, text: str) -> List[List[int]]:
-        counter = Counter(re.findall(self.compiled_pattern, text))
+    @classmethod
+    def pre_tokenize(cls, text: str) -> Dict[Tuple[int, ...], int]:
+        counter = Counter(re.findall(cls.compiled_pattern, text))
         chunks = {}
         to_tuple = lambda seq: tuple(c for c in seq.encode("utf-8"))
         for token, freq in counter.items():
             chunks[to_tuple(token)] = freq
         return chunks
+
+    @staticmethod
+    def export_vocab(vocab):
+        decoder = gpt2_bytes_to_unicode()
+        unicode_vocab = dict()
+        for i, token in vocab.items():
+            unicode_token = "".join([decoder[c] for c in token])
+            unicode_vocab[i] = unicode_token
+        return unicode_vocab
+
+    @staticmethod
+    def export_merges(merges):
+        decoder = gpt2_bytes_to_unicode()
+        unicode_merges = []
+        for merge in merges:
+            unicode_merge = tuple("".join([decoder[c] for c in token]) for token in merge)
+            unicode_merges.append(unicode_merge)
+        return unicode_merges
 
 
 if __name__ == "__main__":

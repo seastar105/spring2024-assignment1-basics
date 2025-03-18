@@ -50,8 +50,8 @@ def run_scaled_dot_product_attention(
     K: torch.FloatTensor,
     Q: torch.FloatTensor,
     V: torch.FloatTensor,
-    mask: Optional[torch.BoolTensor] = None,
-    pdrop: Optional[float] = None,
+    mask: torch.BoolTensor | None = None,
+    pdrop: float | None = None,
 ) -> torch.FloatTensor:
     """Given key (K), query (Q), and value (V) tensors, return
     the output of your scaled dot product attention implementation.
@@ -426,7 +426,7 @@ def run_gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm:
     raise NotImplementedError
 
 
-def get_adamw_cls() -> Type[torch.optim.Optimizer]:
+def get_adamw_cls() -> type[torch.optim.Optimizer]:
     """
     Returns a torch.optim.Optimizer that implements AdamW.
     """
@@ -516,7 +516,7 @@ def run_load_checkpoint(
 def get_tokenizer(
     vocab: dict[int, bytes],
     merges: list[tuple[bytes, bytes]],
-    special_tokens: Optional[list[str]] = None,
+    special_tokens: list[str] | None = None,
 ):
     """Given a vocabulary, a list of merges, and a list of special tokens,
     return a BPE tokenizer that uses the provided vocab, merges, and special tokens.
@@ -570,6 +570,6 @@ def run_train_bpe(
                 Merges are ordered by order of creation.
     """
     from cs336_basics.bbpe import BBPE
-    tokenizer = BBPE()
-    tokenizer.train(input_path, vocab_size, special_tokens)
-    return tokenizer.vocab, tokenizer.merges
+
+    vocab, merges = BBPE.train(input_path, vocab_size, special_tokens)
+    return vocab, merges
