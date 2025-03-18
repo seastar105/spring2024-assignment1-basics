@@ -6,7 +6,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 import json
 import time
 
-from cs336_basics.bbpe import BBPE
+from cs336_basics.bbpe import Tokenizer
 
 if __name__ == "__main__":
     start = time.perf_counter()
@@ -14,7 +14,7 @@ if __name__ == "__main__":
     vocab_size = 10000
     special_tokens = ["|endoftext|"]
     num_proc = 16
-    vocab, merges = BBPE.train(input_path, vocab_size, special_tokens, progress=True, num_proc=num_proc)
+    vocab, merges = Tokenizer.train(input_path, vocab_size, special_tokens, progress=True, num_proc=num_proc)
     end = time.perf_counter()
 
     elapsed_time = end - start
@@ -23,8 +23,8 @@ if __name__ == "__main__":
     Path("tokenizers").mkdir(exist_ok=True)
     vocab_path = "tokenizers/tiny_stories_vocab.json"
     merges_path = "tokenizers/tiny_stories_merges.txt"
-    vocab = BBPE.export_vocab(vocab)
-    merges = BBPE.export_merges(merges)
+    vocab = Tokenizer.export_vocab(vocab)
+    merges = Tokenizer.export_merges(merges)
 
     max_token = ""
     for token in vocab.values():
@@ -33,7 +33,7 @@ if __name__ == "__main__":
     print(f"Max token length: {len(max_token)}, {max_token}")
 
     with open(vocab_path, "w", encoding="utf-8") as f:
-        json.dump(vocab, f, indent=2, ensure_ascii=False)
+        json.dump(vocab, f, ensure_ascii=False)
 
     with open(merges_path, "w", encoding="utf-8") as f:
         for merge in merges:

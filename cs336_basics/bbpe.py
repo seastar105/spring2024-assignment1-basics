@@ -1,11 +1,13 @@
 import concurrent.futures
+import json
 import logging
 import os
 import sys
 import time
 from collections import Counter, defaultdict
 from contextlib import contextmanager
-from typing import Dict, List, Tuple
+from pathlib import Path
+from typing import Dict, Iterable, Iterator, List, Tuple
 
 import regex as re
 from tqdm.auto import tqdm
@@ -156,8 +158,97 @@ class PriorityQueue:
             print(f"{vocab[pair[0]]} + {vocab[pair[1]]}: {freq}")
 
 
-class BBPE:
+class Tokenizer:
     compiled_pattern = re.compile(r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""")
+
+    def __init__(
+        self, vocab: Dict[int, bytes], merges: List[Tuple[bytes, bytes]], special_tokens: List[str] | None = None
+    ):
+        self.vocab = vocab
+        self.merges = []
+        rev_vocab = {v: k for k, v in vocab.items()}
+        for c1, c2 in merges:
+            pair = (rev_vocab[c1], rev_vocab[c2])
+            new_idx = rev_vocab[c1 + c2]
+            self.merges.append((pair, new_idx))
+        self.merges_dict = {pair: new_idx for pair, new_idx in self.merges}
+
+        self.special_tokens = special_tokens or []
+        self.special_tokens_map = {token: rev_vocab[token.encode("utf-8")] for token in special_tokens}
+
+    @classmethod
+    def from_files(cls, vocab_filepath: str, merges_filepath: str, special_tokens: List[str] | None = None):
+        unicode_to_bytes = {v: k for k, v in gpt2_bytes_to_unicode().items()}
+
+        with open(vocab_filepath) as f:
+            unicode_vocab = json.load(f)
+        vocab = dict()
+        for idx, token in unicode_vocab.items():
+            idx = int(idx)
+            vocab[idx] = bytes([unicode_to_bytes[c] for c in token])
+
+        merges = []
+        with open(merges_filepath) as f:
+            for line in f:
+                c1, c2 = line.strip().split(" ")
+                merges.append((bytes([unicode_to_bytes[c] for c in c1]), bytes([unicode_to_bytes[c] for c in c2])))
+        return cls(vocab, merges, special_tokens)
+
+    def encode_chunk(self, chunk: str):
+        chunk = list(chunk.encode("utf-8"))
+        while len(chunk) >= 2:
+            pairs = [(chunk[i], chunk[i + 1]) for i in range(len(chunk) - 1)]
+            lowest_pair = min(pairs, key=lambda pair: self.merges_dict.get(pair, float("inf")))
+            if lowest_pair in self.merges_dict:
+                i = pairs.index(lowest_pair)
+                chunk = chunk[:i] + [self.merges_dict[lowest_pair]] + chunk[i + 2 :]
+            else:
+                break
+        return chunk
+
+    def encode(self, text: str) -> List[int]:
+        if self.special_tokens:
+            special_pattern = "(" + "|".join(re.escape(k) for k in self.special_tokens) + ")"
+            special_chunks = re.split(special_pattern, text)
+        else:
+            special_chunks = [text]
+
+        tokens = []
+        for text in special_chunks:
+            if text in self.special_tokens_map:
+                tokens.extend([self.special_tokens_map[text]])
+            else:
+                chunks = re.findall(self.compiled_pattern, text)
+                for chunk in chunks:
+                    tokens.extend(self.encode_chunk(chunk))
+        return tokens
+
+    def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
+        for text in iterable:
+            yield from self.encode(text)
+
+    def decode(self, tokens: List[int]) -> str:
+        cat_bytes = b"".join(self.vocab[token] for token in tokens)
+        return cat_bytes.decode("utf-8", errors="replace")
+
+    @staticmethod
+    def from_pretrained(name: str):
+        PRETRAINED = {
+            "owt": {
+                "vocab_filepath": str(Path(__file__).parent / "tokenizers" / "open_webtext_vocab.json"),
+                "merges_filepath": str(Path(__file__).parent / "tokenizers" / "open_webtext_merges.txt"),
+                "special_tokens": ["|endoftext|"],
+            },
+            "tiny_stories": {
+                "vocab_filepath": str(Path(__file__).parent / "tokenizers" / "tiny_stories_vocab.json"),
+                "merges_filepath": str(Path(__file__).parent / "tokenizers" / "tiny_stories_merges.txt"),
+                "special_tokens": ["|endoftext|"],
+            },
+        }
+        if name not in PRETRAINED:
+            raise ValueError(f"Unknown pretrained tokenizer: {name}")
+        params = PRETRAINED[name]
+        return Tokenizer.from_files(params["vocab_filepath"], params["merges_filepath"], params["special_tokens"])
 
     @classmethod
     def train(
@@ -307,10 +398,3 @@ class BBPE:
             unicode_merge = tuple("".join([decoder[c] for c in token]) for token in merge)
             unicode_merges.append(unicode_merge)
         return unicode_merges
-
-
-if __name__ == "__main__":
-    # Train tokenizer on tiny stories
-    tokenizer = BBPE()
-    tokenizer.train("./data/TinyStoriesV2-GPT4-train.txt", 10000, ["|endoftext|"], progress=True)
-    # tokenizer.train("./data/owt_train.txt", 32000, ["|endoftext|"], progress=True)
