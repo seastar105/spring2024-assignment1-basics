@@ -43,7 +43,15 @@ def run_positionwise_feedforward(
     # You can also manually assign the weights
     # my_ffn.w1.weight.data = weights["w1.weight"]
     # my_ffn.w2.weight.data = weights["w2.weight"]
-    raise NotImplementedError
+    from cs336_basics.model import FeedForward
+
+    ffn = FeedForward(d_model, d_ff)
+    state_dict = {
+        "fc1.weight": weights["w1.weight"],
+        "fc2.weight": weights["w2.weight"],
+    }
+    ffn.load_state_dict(state_dict)
+    return ffn(in_features)
 
 
 def run_scaled_dot_product_attention(
@@ -85,7 +93,9 @@ def run_scaled_dot_product_attention(
         with the output of running your scaled dot product attention
         implementation with the provided key, query, and value tensors.
     """
-    raise NotImplementedError
+    from cs336_basics.model import scaled_dot_product_attention
+
+    return scaled_dot_product_attention(Q, K, V, mask=mask, dropout=pdrop)
 
 
 def run_multihead_self_attention(
@@ -135,7 +145,17 @@ def run_multihead_self_attention(
         torch.FloatTensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    from cs336_basics.model import CausalMultiHeadAttention
+
+    layer = CausalMultiHeadAttention(d_model, num_heads, attn_pdrop)
+    state_dict = {
+        "q_proj.weight": torch.cat([weights[f"q_heads.{i}.weight"] for i in range(num_heads)], dim=0),
+        "k_proj.weight": torch.cat([weights[f"k_heads.{i}.weight"] for i in range(num_heads)], dim=0),
+        "v_proj.weight": torch.cat([weights[f"v_heads.{i}.weight"] for i in range(num_heads)], dim=0),
+        "out_proj.weight": weights["output_proj.weight"],
+    }
+    layer.load_state_dict(state_dict)
+    return layer(in_features)
 
 
 def run_transformer_block(
@@ -207,7 +227,21 @@ def run_transformer_block(
         FloatTensor of shape (batch_size, sequence_length, d_model) with the output of
         running the Transformer block on the input features.
     """
-    raise NotImplementedError
+    from cs336_basics.model import Block
+
+    layer = Block(d_model, num_heads, d_ff, attn_pdrop, residual_pdrop)
+    state_dict = {
+        "attn_norm.weight": weights["ln1.weight"],
+        "attn.q_proj.weight": weights["attn.q_proj.weight"],
+        "attn.k_proj.weight": weights["attn.k_proj.weight"],
+        "attn.v_proj.weight": weights["attn.v_proj.weight"],
+        "attn.out_proj.weight": weights["attn.output_proj.weight"],
+        "ff_norm.weight": weights["ln2.weight"],
+        "ff.proj1.weight": weights["ffn.w1.weight"],
+        "ff.proj2.weight": weights["ffn.w2.weight"],
+    }
+    layer.load_state_dict(state_dict)
+    return layer(in_features)
 
 
 def run_transformer_lm(
@@ -300,7 +334,40 @@ def run_transformer_lm(
         FloatTensor of shape (batch size, sequence_length, vocab_size) with the predicted unnormalized
         next-word distribution for each token.
     """
-    raise NotImplementedError
+    from cs336_basics.model import TransformerLM
+
+    model = TransformerLM(
+        vocab_size=vocab_size,
+        num_layers=num_layers,
+        context_length=context_length,
+        dim=d_model,
+        num_heads=num_heads,
+        dim_ff=d_ff,
+        attn_pdrop=attn_pdrop,
+        residual_pdrop=residual_pdrop,
+    )
+
+    state_dict = {
+        "token_emb.weight": weights["token_embeddings.weight"],
+        "pos_emb.weight": weights["position_embeddings.weight"],
+        "final_norm.weight": weights["ln_final.weight"],
+        "lm_head.weight": weights["lm_head.weight"],
+    }
+    for i in range(num_layers):
+        prefix = f"layers.{i}."
+        layer_state_dict = {
+            "attn_norm.weight": weights[f"{prefix}ln1.weight"],
+            "attn.q_proj.weight": weights[f"{prefix}attn.q_proj.weight"],
+            "attn.k_proj.weight": weights[f"{prefix}attn.k_proj.weight"],
+            "attn.v_proj.weight": weights[f"{prefix}attn.v_proj.weight"],
+            "attn.out_proj.weight": weights[f"{prefix}attn.output_proj.weight"],
+            "ff_norm.weight": weights[f"{prefix}ln2.weight"],
+            "ff.proj1.weight": weights[f"{prefix}ffn.w1.weight"],
+            "ff.proj2.weight": weights[f"{prefix}ffn.w2.weight"],
+        }
+        state_dict.update({f"layers.{i}.{k}": v for k, v in layer_state_dict.items()})
+    model.load_state_dict(state_dict)
+    return model(in_indices)
 
 
 def run_rmsnorm(
@@ -331,7 +398,11 @@ def run_rmsnorm(
         FloatTensor of with the same shape as `in_features` with the output of running
         RMSNorm of the `in_features`.
     """
-    raise NotImplementedError
+    from cs336_basics.model import RMSNorm
+
+    layer = RMSNorm(d_model, eps)
+    layer.load_state_dict(weights)
+    return layer(in_features)
 
 
 def run_gelu(in_features: torch.FloatTensor) -> torch.FloatTensor:
@@ -346,7 +417,9 @@ def run_gelu(in_features: torch.FloatTensor) -> torch.FloatTensor:
         FloatTensor of with the same shape as `in_features` with the output of applying
         GELU to each element.
     """
-    raise NotImplementedError
+    from cs336_basics.model import gelu
+
+    return gelu(in_features)
 
 
 def run_get_batch(
@@ -390,7 +463,9 @@ def run_softmax(in_features: torch.FloatTensor, dim: int) -> torch.FloatTensor:
         FloatTensor of with the same shape as `in_features` with the output of
         softmax normalizing the specified `dim`.
     """
-    raise NotImplementedError
+    from cs336_basics.model import softmax
+
+    return softmax(in_features, dim=dim)
 
 
 def run_cross_entropy(inputs: torch.FloatTensor, targets: torch.LongTensor):
@@ -536,7 +611,9 @@ def get_tokenizer(
     Returns:
         A BPE tokenizer that uses the provided vocab, merges, and special tokens.
     """
-    raise NotImplementedError
+    from cs336_basics.bbpe import Tokenizer
+
+    return Tokenizer(vocab, merges, special_tokens=special_tokens)
 
 
 def run_train_bpe(
