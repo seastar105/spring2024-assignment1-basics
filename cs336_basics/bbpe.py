@@ -1,4 +1,5 @@
 import concurrent.futures
+import gc
 import json
 import logging
 import os
@@ -153,6 +154,9 @@ class PriorityQueue:
             if diff:
                 self.push(pair, diff)
 
+    def size(self):
+        return len(self.heap) - 1
+
     def print(self, vocab):
         for pair, freq in self.heap[1:]:
             print(f"{vocab[pair[0]]} + {vocab[pair[1]]}: {freq}")
@@ -201,15 +205,86 @@ class Tokenizer:
         return cls(vocab, merges, special_tokens)
 
     def encode_chunk(self, chunk: str):
+        # some chunk could be really long, so need to improve this logic
+        THRESHOLD = 100
+        orig_chunk = chunk
         chunk = list(chunk.encode("utf-8"))
-        while len(chunk) >= 2:
-            pairs = [(chunk[i], chunk[i + 1]) for i in range(len(chunk) - 1)]
-            lowest_pair = min(pairs, key=lambda pair: self.merges_dict.get(pair, float("inf")))
-            if lowest_pair in self.merges_dict:
-                i = pairs.index(lowest_pair)
-                chunk = chunk[:i] + [self.merges_dict[lowest_pair]] + chunk[i + 2 :]
-            else:
-                break
+        max_merge = len(chunk)
+        if max_merge <= THRESHOLD:
+            # TODO: Improve this logic, currently it's O(n^2) and it can be improved to O(nlogn) with priority queue
+            while len(chunk) >= 2:
+                pairs = [(chunk[i], chunk[i + 1]) for i in range(len(chunk) - 1)]
+                lowest_pair = min(pairs, key=lambda pair: self.merges_dict.get(pair, float("inf")))
+                if lowest_pair in self.merges_dict:
+                    i = pairs.index(lowest_pair)
+                    chunk = chunk[:i] + [self.merges_dict[lowest_pair]] + chunk[i + 2 :]
+                else:
+                    break
+        else:
+            # use priority queue and doubly linked list
+            pairs = defaultdict(int)
+
+            # construct doubly linked list and their index
+            index = defaultdict(list)
+            start_node = Node(chunk[0], 1)
+            prev_node = start_node
+            for i in range(1, len(chunk)):
+                cur_node = Node(chunk[i], 1, prev=prev_node)
+                prev_node.next = cur_node
+                pair = (prev_node.value, cur_node.value)
+                index[pair].append(prev_node)
+                prev_node = cur_node
+                pairs[pair] += 1
+
+            # construct priority queue, low index has high priority
+            pq = PriorityQueue()
+            for pair in pairs:
+                if pair in self.merges_dict:
+                    pq.push(pair, -self.merges_dict[pair])
+
+            # merge until no pair to merge
+            while pq.size() > 0:
+                pair, new_idx = pq.top()
+                new_idx = -new_idx
+                pq.pop()  # after merge, that pair will no longer exist
+
+                if pairs[pair] == 0:
+                    # pair does not exist, skip
+                    continue
+
+                for node in index[pair]:
+                    node: Node
+                    if node.value != pair[0] or node.next is None or node.next.value != pair[1]:
+                        # invalid node, skip
+                        continue
+
+                    new_pairs = []
+                    pairs[pair] -= 1
+                    # remove pair
+                    if node.prev:
+                        pairs[(node.prev.value, pair[0])] -= 1
+                        pairs[(node.prev.value, new_idx)] += 1
+                        new_pairs.append((node.prev.value, new_idx))
+                    if node.next.next:
+                        pairs[(pair[1], node.next.next.value)] -= 1
+                        pairs[(new_idx, node.next.next.value)] += 1
+                        new_pairs.append((new_idx, node.next.next.value))
+                    node.next.delete()
+                    node.value = new_idx
+                    # update index
+                    if node.prev:
+                        index[(node.prev.value, new_idx)].append(node.prev)
+                    if node.next:
+                        index[(new_idx, node.next.value)].append(node)
+                    # update priority queue
+                    for new_pair in new_pairs:
+                        if new_pair in self.merges_dict and pq.index.get(new_pair, None) is None:
+                            pq.push(new_pair, -self.merges_dict[new_pair])
+                chunk = []
+                node = start_node
+                while node:
+                    chunk.append(node.value)
+                    node = node.next
         return chunk
 
     def encode(self, text: str, num_proc: int = 4) -> List[int]:
@@ -227,12 +302,12 @@ class Tokenizer:
             if text in self.special_tokens_map:
                 tokens.extend([self.special_tokens_map[text]])
             else:
-                chunks = re.findall(self.compiled_pattern, text)
+                chunks = re.finditer(self.compiled_pattern, text)
                 for chunk in chunks:
-                    tokens.extend(self.encode_chunk(chunk))
+                    tokens.extend(self.encode_chunk(chunk.group()))
         return tokens
 
-    def encode_iterable(self, iterable: Iterable[str], num_proc: int = 4) -> Iterator[int]:
+    def encode_iterable(self, iterable: Iterable[str], num_proc: int = 4, progress: bool = False) -> Iterator[int]:
         # NOTE: Throughput is about 10MB/s with num_proc=16, need to improve
         CLEAR_CHUNK_NUM = num_proc * num_proc
         CHUNK_SIZE = 1024 * 1024
@@ -240,9 +315,13 @@ class Tokenizer:
         with concurrent.futures.ProcessPoolExecutor(max_workers=num_proc) as executor:
             futures = []
             buf = ""
+            if progress:
+                pbar = tqdm(unit=" characters", unit_scale=True, desc="Encoding") if progress else None
             for text in iterable:
                 buf += text
-                if len(buf) >= CHUNK_SIZE:
+                if progress:
+                    pbar.update(len(text))
+                while len(buf) >= CHUNK_SIZE:
                     pos = CHUNK_SIZE
                     found = False
                     while not found:
@@ -264,19 +343,29 @@ class Tokenizer:
                                 found = True
                         if not found:
                             pos -= ADJUST_SIZE
+                        if pos <= CHUNK_SIZE - 50 * ADJUST_SIZE:
+                            break
+                    if not found:
+                        break
                     chunk = buf[:pos]
                     buf = buf[pos:]
                     futures.append(executor.submit(self.encode, chunk))
-                    if len(futures) >= CLEAR_CHUNK_NUM:
-                        for future in concurrent.futures.as_completed(futures):
-                            tokens = future.result()
-                            yield from tokens
-                        futures.clear()
+                if len(futures) >= CLEAR_CHUNK_NUM:
+                    tokens = []
+                    for future in concurrent.futures.as_completed(futures):
+                        tokens.extend(future.result())
+                    yield from tokens
+                    futures.clear()
+                    gc.collect()
             if buf:
                 futures.append(executor.submit(self.encode, buf))
+            if progress:
+                pbar.close()
+        tokens = []
         for future in concurrent.futures.as_completed(futures):
-            tokens = future.result()
-            yield from tokens
+            tokens.extend(future.result())
+        yield from tokens
+        gc.collect()
 
     def decode(self, tokens: List[int]) -> str:
         cat_bytes = b"".join(self.vocab[token] for token in tokens)
@@ -342,7 +431,7 @@ class Tokenizer:
                     for token, freq in result.items():
                         chunk_freq[token] = chunk_freq.get(token, 0) + freq
 
-        __import__("gc").collect()
+        gc.collect()
         logger.info(f"Number of chunks: {len(chunk_freq)}")
         vocab = dict()
         for i in range(256):
@@ -370,7 +459,7 @@ class Tokenizer:
                 pq.push(pair, freq)
 
             del occurences
-        __import__("gc").collect()
+        gc.collect()
 
         with timer("Merging"):
             iterator = tqdm(range(num_merges), leave=False) if progress else range(num_merges)
