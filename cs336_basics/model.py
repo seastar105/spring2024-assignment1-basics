@@ -239,8 +239,12 @@ def generate(
         if top_p < 1.0:
             sorted_probs, sorted_indices = torch.sort(probs, descending=True)
             cum_probs = torch.cumsum(sorted_probs, dim=-1)
-            mask = cum_probs > top_p
-            probs[sorted_indices[mask]] = 0.0
+            # Create mask for tokens where cumulative probability exceeds top_p
+            sorted_indices_to_remove = cum_probs > top_p
+            # Shift the mask to ensure at least one token (the highest probability one) is kept
+            sorted_indices_to_remove[1:] = sorted_indices_to_remove[:-1].clone()
+            sorted_indices_to_remove[0] = False
+            probs[sorted_indices[sorted_indices_to_remove]] = 0.0
             probs = probs / probs.sum()
 
         next_token = torch.multinomial(probs, num_samples=1).item()

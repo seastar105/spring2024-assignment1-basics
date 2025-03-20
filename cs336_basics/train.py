@@ -81,10 +81,17 @@ def save_checkpoint(model: torch.nn.Module, optimizer: torch.optim.Optimizer, it
     )
 
 
-def load_checkpoint(src: str, model: torch.nn.Module, optimizer: torch.optim.Optimizer):
-    checkpoint = torch.load(src)
-    model.load_state_dict(checkpoint["model"])
-    optimizer.load_state_dict(checkpoint["optimizer"])
+def load_checkpoint(src: str, model: torch.nn.Module, optimizer: Optional[torch.optim.Optimizer] = None) -> int:
+    checkpoint = torch.load(src, "cpu")
+    model_state_dict = dict()
+    if list(checkpoint["model"].keys())[0].startswith("_orig_mod."):
+        for k, v in checkpoint["model"].items():
+            model_state_dict[k[len("_orig_mod.") :]] = v
+    else:
+        model_state_dict = checkpoint["model"]
+    model.load_state_dict(model_state_dict)
+    if optimizer:
+        optimizer.load_state_dict(checkpoint["optimizer"])
     return checkpoint["iteration"]
 
 
