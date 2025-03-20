@@ -1,18 +1,32 @@
+import math
 from typing import Optional
 
 import torch
 import torch.nn as nn
 
-SQRT2 = torch.sqrt(torch.tensor(2.0))
+from cs336_basics.bbpe import Tokenizer
 
 
 def gelu(x: torch.Tensor):
-    return x * 0.5 * (1 + torch.erf(x / SQRT2.to(x)))
+    return x * 0.5 * (1 + torch.erf(x / math.sqrt(2)))
 
 
 ACTIVATION_MAP = {
     "gelu": gelu,
 }
+
+
+def cross_entropy_loss(logits: torch.Tensor, targets: torch.Tensor):
+    logits = logits.view(-1, logits.size(-1))  # (N, C)
+    targets = targets.view(-1)  # (N,)
+
+    max_elems = logits.max(dim=-1).values
+    logits = logits - max_elems.unsqueeze(-1)
+
+    log_probs = logits - torch.log(torch.sum(torch.exp(logits), dim=-1)).unsqueeze(-1)
+    loss = -log_probs.gather(dim=-1, index=targets.unsqueeze(-1)).squeeze(-1)
+
+    return loss.mean()
 
 
 def softmax(logits: torch.Tensor, dim: int = -1):
@@ -200,6 +214,44 @@ class TransformerLM(nn.Module):
         return self.lm_head(self.final_norm(x))
 
 
+@torch.no_grad()
+def generate(
+    model: TransformerLM,
+    tokenizer: Tokenizer,
+    prompt: str,
+    max_new_tokens: int = 1024,
+    temperature: float = 1.0,
+    top_p: float = 1.0,
+):
+    device = next(model.parameters()).device
+    input_ids = torch.LongTensor(tokenizer.encode(prompt)).unsqueeze(0).to(device)
+    eos_id = tokenizer.encode("<|endoftext|>")[0]
+
+    cnt = 0
+    output = []
+    while cnt < max_new_tokens:
+        logits = model(input_ids)
+        logits = logits[0, -1, :]  # (V,)
+        logits = logits / temperature
+
+        probs = torch.softmax(logits, dim=-1)
+
+        if top_p < 1.0:
+            sorted_probs, sorted_indices = torch.sort(probs, descending=True)
+            cum_probs = torch.cumsum(sorted_probs, dim=-1)
+            mask = cum_probs > top_p
+            probs[sorted_indices[mask]] = 0.0
+            probs = probs / probs.sum()
+
+        next_token = torch.multinomial(probs, num_samples=1).item()
+        input_ids = torch.cat([input_ids, torch.LongTensor([[next_token]]).to(device)], dim=-1)
+        output.append(next_token)
+        if next_token == eos_id:
+            break
+        cnt += 1
+    return tokenizer.decode(output)
+
+
 def estimate_flops(
     vocab_size: int, context_length: int, num_layers: int, dim: int, num_heads: int, intermediate_dim: int
 ):
@@ -272,5 +324,5 @@ if __name__ == "__main__":
         print(f"Model: {name}")
         print("======================================")
         estimate_flops(vocab_size, context_length, nl, d, nh, idim)
-        # calculate_parameters(vocab_size, context_length, nl, d, nh, idim)
+        calculate_parameters(vocab_size, context_length, nl, d, nh, idim)
         print("======================================")

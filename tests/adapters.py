@@ -446,7 +446,10 @@ def run_get_batch(
         is the sampled input sequences, and the second tuple item is the corresponding
         language modeling labels.
     """
-    raise NotImplementedError
+    from cs336_basics.train import NumpyDataset
+
+    dataset = NumpyDataset(dataset)
+    return dataset.get_batch(batch_size, context_length, device)
 
 
 def run_softmax(in_features: torch.FloatTensor, dim: int) -> torch.FloatTensor:
@@ -483,7 +486,9 @@ def run_cross_entropy(inputs: torch.FloatTensor, targets: torch.LongTensor):
     Returns:
         Tensor of shape () with the average cross-entropy loss across examples.
     """
-    raise NotImplementedError
+    from cs336_basics.model import cross_entropy_loss
+
+    return cross_entropy_loss(inputs, targets)
 
 
 def run_gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float):
@@ -498,14 +503,18 @@ def run_gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm:
     Returns:
         None
     """
-    raise NotImplementedError
+    from cs336_basics.optimizer import clip_grad_norm
+
+    clip_grad_norm(parameters, max_l2_norm)
 
 
 def get_adamw_cls() -> type[torch.optim.Optimizer]:
     """
     Returns a torch.optim.Optimizer that implements AdamW.
     """
-    raise NotImplementedError
+    from cs336_basics.optimizer import AdamW
+
+    return AdamW
 
 
 def run_get_lr_cosine_schedule(
@@ -538,7 +547,9 @@ def run_get_lr_cosine_schedule(
     Returns:
         Learning rate at the given iteration under the specified schedule.
     """
-    raise NotImplementedError
+    from cs336_basics.optimizer import get_cosine_schedule_lr
+
+    return get_cosine_schedule_lr(it, max_learning_rate, min_learning_rate, warmup_iters, cosine_cycle_iters)
 
 
 def run_save_checkpoint(
@@ -561,7 +572,9 @@ def run_save_checkpoint(
         out: str | os.PathLike | BinaryIO | IO[bytes]
             Path or file-like object to serialize the model, optimizer, and iteration to.
     """
-    raise NotImplementedError
+    from cs336_basics.train import save_checkpoint
+
+    save_checkpoint(model, optimizer, iteration, out)
 
 
 def run_load_checkpoint(
@@ -585,7 +598,9 @@ def run_load_checkpoint(
     Returns:
         int, the previously-serialized number of iterations.
     """
-    raise NotImplementedError
+    from cs336_basics.train import load_checkpoint
+
+    return load_checkpoint(src, model, optimizer)
 
 
 def get_tokenizer(
