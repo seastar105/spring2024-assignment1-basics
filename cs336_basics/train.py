@@ -162,8 +162,9 @@ def train(args):
         inputs, targets = train_data.get_batch(args.batch_size, args.context_length, device)
 
         # Calculate loss
-        logits = model(inputs)
-        loss = cross_entropy_loss(logits, targets)
+        with torch.autocast("cuda", dtype=torch.bfloat16, enabled=True):
+            logits = model(inputs)
+            loss = cross_entropy_loss(logits, targets)
         loss.backward()
 
         # Update parameters
