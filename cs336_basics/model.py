@@ -183,8 +183,7 @@ class Block(nn.Module):
 
     def forward(self, x: torch.Tensor):
         if self.parallel_block:
-            x = x + self.dropout(self.attn(self.attn_norm(x)))
-            x = x + self.dropout(self.ff(self.ff_norm(x)))
+            x = x + self.dropout(self.attn(self.attn_norm(x))) + self.dropout(self.ff(self.ff_norm(x)))
         else:
             if self.norm_type == "pre_norm":
                 x = x + self.dropout(self.attn(self.attn_norm(x)))
