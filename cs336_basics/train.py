@@ -126,6 +126,9 @@ def train(args):
         residual_pdrop=args.residual_pdrop,
         epsilon=args.epsilon,
         activation=args.activation,
+        norm_class=args.norm_class,
+        norm_type=args.norm_type,
+        parallel_block=args.parallel_block,
     )
     logging.info(f"Model has {sum(p.numel() for p in model.parameters()):,} parameters")
 
@@ -230,6 +233,9 @@ if __name__ == "__main__":
     parser.add_argument("--residual_pdrop", type=float, default=0.1)
     parser.add_argument("--epsilon", type=float, default=1e-5)
     parser.add_argument("--activation", type=str, default="gelu")
+    parser.add_argument("--parallel_block", action="store_true")
+    parser.add_argument("--norm_class", type=str, default="rms_norm", choices=["rms_norm", "layer_norm", "none"])
+    parser.add_argument("--norm_type", type=str, default="pre_norm", choices=["pre_norm", "post_norm"])
 
     # Training Parameters
     parser.add_argument("--run_name", type=str, required=True)

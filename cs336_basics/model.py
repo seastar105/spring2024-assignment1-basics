@@ -1,4 +1,5 @@
 import math
+from functools import partial
 from typing import Optional
 
 import torch
@@ -77,6 +78,20 @@ class RMSNorm(nn.Module):
         return x / self.rms(x).unsqueeze(-1) * self.weight.view(1, 1, -1)
 
 
+class LayerNorm(nn.Module):
+    def __init__(self, dim: int, epsilon: float = 1e-5):
+        super().__init__()
+
+        self.weight = nn.Parameter(torch.ones(dim))
+        self.bias = nn.Parameter(torch.zeros(dim))
+        self.epsilon = epsilon
+
+    def forward(self, x: torch.Tensor):
+        mean = x.mean(dim=-1, keepdim=True)
+        std = x.std(dim=-1, keepdim=True)
+        return self.weight * (x - mean) / (std + self.epsilon) + self.bias
+
+
 class FeedForward(nn.Module):
     def __init__(self, dim: int, intermediate_dim: int, activation: str = "gelu"):
         super().__init__()
@@ -144,20 +159,39 @@ class Block(nn.Module):
         epsilon: float = 1e-5,
         context_length: int = 1024,
         activation: str = "gelu",
+        norm_class: str = "rms_norm",
+        norm_type: str = "pre_norm",
+        parallel_block: bool = False,
     ):
         super().__init__()
+        if norm_class == "rms_norm":
+            norm_class = partial(RMSNorm, dim=dim, epsilon=epsilon)
+        elif norm_class == "layer_norm":
+            norm_class = partial(LayerNorm, dim=dim, epsilon=epsilon)
+        elif norm_class == "none":
+            norm_class = nn.Identity
 
-        self.attn_norm = RMSNorm(dim, epsilon=epsilon)
+        self.attn_norm = norm_class()
         self.attn = CausalMultiHeadAttention(dim, num_heads, attn_pdrop=attn_pdrop, context_length=context_length)
-        self.ff_norm = RMSNorm(dim, epsilon=epsilon)
+        self.ff_norm = norm_class()
         self.ff = FeedForward(dim, dim_ff, activation=activation)
+
+        self.parallel_block = parallel_block
+        self.norm_type = norm_type
 
         self.dropout = nn.Dropout(residual_pdrop)
 
     def forward(self, x: torch.Tensor):
-        x = x + self.dropout(self.attn(self.attn_norm(x)))
-        x = x + self.dropout(self.ff(self.ff_norm(x)))
-
+        if self.parallel_block:
+            x = x + self.dropout(self.attn(self.attn_norm(x)))
+            x = x + self.dropout(self.ff(self.ff_norm(x)))
+        else:
+            if self.norm_type == "pre_norm":
+                x = x + self.dropout(self.attn(self.attn_norm(x)))
+                x = x + self.dropout(self.ff(self.ff_norm(x)))
+            elif self.norm_type == "post_norm":
+                x = self.attn_norm(x + self.dropout(self.attn(x)))
+                x = self.ff_norm(x + self.dropout(self.ff(x)))
         return x
 
 
@@ -174,6 +208,9 @@ class TransformerLM(nn.Module):
         residual_pdrop: float = 0.0,
         epsilon: float = 1e-5,
         activation: str = "gelu",
+        norm_class: str = "rms_norm",  # rms_norm, layer_norm, none
+        norm_type: str = "pre_norm",  # pre_norm, post_norm
+        parallel_block: bool = False,
     ):
         super().__init__()
 
@@ -193,6 +230,9 @@ class TransformerLM(nn.Module):
                     epsilon=epsilon,
                     context_length=context_length,
                     activation=activation,
+                    norm_class=norm_class,
+                    norm_type=norm_type,
+                    parallel_block=parallel_block,
                 )
             )
 
