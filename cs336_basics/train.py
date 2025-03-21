@@ -49,9 +49,9 @@ class NumpyDataset:
     def get_batch(self, batch_size: int, context_length: int, device: Union[torch.device, str]):
         batch_length = batch_size * context_length
         if self.generator is not None:
-            offset = self.generator.randint(0, self.data_length - context_length)
+            offset = self.generator.randint(0, self.data_length - batch_length)
         else:
-            offset = np.random.randint(0, self.data_length - context_length)
+            offset = np.random.randint(0, self.data_length - batch_length)
         x_batch = self.data[offset : offset + batch_length].astype(np.int64)
         y_batch = self.data[offset + 1 : offset + batch_length + 1].astype(np.int64)
         return torch.from_numpy(x_batch).reshape(batch_size, context_length).to(device), torch.from_numpy(
